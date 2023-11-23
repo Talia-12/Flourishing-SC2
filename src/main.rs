@@ -7,9 +7,16 @@ impl Player for FlourishingBot {
 	// This settings are used to connect bot to the game.
 	fn get_player_settings(&self) -> PlayerSettings {
 		PlayerSettings::new(Race::Random)
-			.with_name("BotName")
+			.with_name("Flourishing")
 			.raw_affects_selection(false)
 			.raw_crop_to_playable_area(true)
+	}
+
+	fn on_start(&mut self) -> SC2Result<()> {
+		for worker in &self.units.my.workers {
+				worker.attack(Target::Pos(self.enemy_start), false);
+		}
+		Ok(())
 	}
 	
 	// This method will be called automatically each game step.
@@ -28,7 +35,7 @@ fn main() -> SC2Result<()> {
 		// Opponent configuration.
 		Computer::new(Race::Random, Difficulty::VeryEasy, None),
 		// Map name. Panics if map doesn't exists in "StarCraft II/Maps" folder.
-		"EternalEmpireLE",
+		"BerlingradAIE",
 		// Additional settings:
 		// LaunchOptions {
 		//     sc2_version: Option<&str>, // Default: None - Latest available patch.
