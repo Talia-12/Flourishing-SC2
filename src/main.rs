@@ -1,11 +1,12 @@
 use std::cmp::Ordering;
 
-use rust_sc2::prelude::*;
+use rust_sc2::{prelude::*, Request};
 
 #[bot]
 #[derive(Default)]
 struct FlourishingBot {
-	last_loop_distributed: u32
+	last_loop_distributed: u32,
+	last_debug_messages: f32
 }
 
 impl Player for FlourishingBot {
@@ -42,7 +43,8 @@ impl Player for FlourishingBot {
 	// This method will be called automatically each game step.
 	// Main bot's logic should be here.
 	// Bot's observation updates before each step.
-	fn on_step(&mut self, iteration: usize) -> SC2Result<()> {
+	fn on_step(&mut self, _iteration: usize) -> SC2Result<()> {
+		self.debug_messages();
 		self.distribute_workers();
 		self.upgrades();
 		self.build();
@@ -54,7 +56,21 @@ impl Player for FlourishingBot {
 }
 
 impl FlourishingBot {
+	const DEBUG_MESSAGE_DELAY: f32 = 10.0;
 	const DISTRIBUTION_DELAY: u32 = 8;
+
+	fn debug_messages(&mut self) {
+		let time = self.time;
+		let last_debug_messages = &mut self.last_debug_messages;
+		if *last_debug_messages + Self::DEBUG_MESSAGE_DELAY > time {
+			return;
+		}
+		*last_debug_messages = time;
+
+		let hatch_count = self.counter().all().count(UnitTypeId::Hatchery);
+		let requested_hatch_count = 1 + (self.time / 120.0) as usize;
+		self.chat_ally(&format!("we currently have {} hatcheries, we want {}, it has been {} seconds since the game started.", hatch_count, requested_hatch_count, time));
+	}
 
 	fn distribute_workers(&mut self) {
 		if self.units.my.workers.is_empty() {
@@ -266,8 +282,8 @@ impl FlourishingBot {
 			}
 		}
 
-		let hatchery = UnitTypeId::Hatchery;
-		if self.can_afford(hatchery, false) {
+		let hatchery = UnitTypeId::Hatchery;		
+		if self.can_afford(hatchery, false) && self.counter().all().count(hatchery) < 1 + (self.time / 120.0) as usize {
 			if let Some(exp) = self.get_expansion() {
 				if let Some(builder) = self.get_builder(exp.loc, &mineral_tags) {
 					builder.build(hatchery, exp.loc, false);
@@ -353,7 +369,8 @@ impl FlourishingBot {
 				});
 		}
 
-		let zerglings = self.units.my.units.of_type(UnitTypeId::Zergling);
+		let zergling = UnitTypeId::Zergling;
+		let zerglings = self.units.my.units.of_type(zergling);
 		if zerglings.is_empty() {
 			return;
 		}
@@ -362,9 +379,10 @@ impl FlourishingBot {
 		let speed_upgrade = UpgradeId::Zerglingmovementspeed;
 		let speed_upgrade_is_almost_ready =
 			self.has_upgrade(speed_upgrade) || self.upgrade_progress(speed_upgrade) >= 0.8;
+		let should_attack = speed_upgrade_is_almost_ready && self.counter().count(zergling) > (self.time / 10.0) as usize;
 
 		// Attacking with zerglings or defending our locations
-		let targets = if speed_upgrade_is_almost_ready {
+		let targets = if should_attack {
 			self.units.enemy.all.ground()
 		} else {
 			self.units
@@ -384,7 +402,7 @@ impl FlourishingBot {
 				}
 			}
 		} else {
-			let target = if speed_upgrade_is_almost_ready {
+			let target = if should_attack {
 				self.enemy_start
 			} else {
 				self.start_location.towards(self.start_center, -8.0)
