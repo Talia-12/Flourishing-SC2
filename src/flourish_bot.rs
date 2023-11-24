@@ -9,6 +9,7 @@ pub struct FlourishBot {
 	last_loop_distributed: u32,
 	last_loop_upgraded: u32,
 	last_debug_messages: f32,
+	attacking: bool,
 	upgrades_to_research: Vec<UpgradeId>
 }
 
@@ -19,6 +20,7 @@ impl Default for FlourishBot {
 			last_loop_distributed: Default::default(),
 			last_loop_upgraded: Default::default(),
 			last_debug_messages: Default::default(),
+			attacking: Default::default(),
 			upgrades_to_research: vec![
 				UpgradeId::Zerglingmovementspeed,
 				UpgradeId::ZergMeleeWeaponsLevel1,
@@ -91,9 +93,7 @@ impl FlourishBot {
 		}
 		*last_debug_messages = time;
 
-		let hatch_count = self.counter().all().count(UnitTypeId::Hatchery);
-		let requested_hatch_count = 1 + (self.time / 120.0) as usize;
-		self.chat_ally(&format!("we currently have {} hatcheries, we want {}, it has been {} seconds since the game started.", hatch_count, requested_hatch_count, time));
+		
 	}
 
 	fn distribute_workers(&mut self) {
@@ -137,14 +137,15 @@ impl FlourishBot {
 
 		// Distributing gas workers
 		let has_enough_gas = self.vespene > 200 && self.vespene > self.minerals;
+		let has_way_too_much_gas = has_enough_gas && self.vespene > 2*self.minerals;
 		let has_enough_workers = self.counter().count(UnitTypeId::Drone) > 10;
-		let target_gas_workers = Some(if has_enough_gas || !has_enough_workers { 0 } else { 3 });
+		let target_gas_workers: usize = if !has_enough_workers { 0 } else if has_way_too_much_gas { 1 } else if has_enough_gas { 2 } else { 3 };
 
 		self.units.my.gas_buildings.iter().ready().for_each(|gas| {
 			let ideal_harvesters = gas.ideal_harvesters().unwrap() as usize;
 			let assigned_harvesters = gas.assigned_harvesters().unwrap() as usize;
 
-			match gas.assigned_harvesters().cmp(&target_gas_workers) {
+			match gas.assigned_harvesters().cmp(&Some(target_gas_workers as u32)) {
 				Ordering::Less => {
 					// If there are less than the desired number of gas workers, workers
 					// can be stolen from anywhere to put in gas
@@ -157,7 +158,7 @@ impl FlourishBot {
 						deficit_geysers.push(gas.clone());
 					}
 				}
-				Ordering::Greater => self.add_excess_workers_from_gas(&bases, gas, &mut idle_workers),
+				Ordering::Greater => self.add_excess_workers_from_gas(&bases, gas, &mut idle_workers, target_gas_workers),
 				_ => {}
 			}
 		});
@@ -279,6 +280,17 @@ impl FlourishBot {
 			}
 		}
 
+		let chamber = UnitTypeId::EvolutionChamber;
+		if self.counter().all().count(chamber) == 0 && self.can_afford(chamber, false) {
+			let place = self.start_location.towards(self.game_info.map_center, 6.0);
+			if let Some(location) = self.find_placement(pool, place, Default::default()) {
+				if let Some(builder) = self.get_builder(location, &mineral_tags) {
+					builder.build(chamber, location, false);
+					self.subtract_resources(chamber, false);
+				}
+			}
+		}
+
 		let extractor = UnitTypeId::Extractor;
 		let hatchery = UnitTypeId::Hatchery;		
 		let num_extractors = self.counter().all().count(extractor);
@@ -327,14 +339,19 @@ impl FlourishBot {
 		}
 
 		let over = UnitTypeId::Overlord;
-		if self.supply_left < 3
-			&& self.supply_cap < 200
-			&& self.counter().ordered().count(over) == 0
+		let mut overs_under_prod = self.counter().ordered().count(over) as u32;
+
+		while overs_under_prod <= 10
+			&& (self.supply_left + (7.6 * overs_under_prod as f32) as u32) < 3 + (0.05 * self.supply_cap as f32) as u32
+			&& self.supply_cap + 8 * overs_under_prod < 200
 			&& self.can_afford(over, false)
 		{
 			if let Some(larva) = self.units.my.larvas.pop() {
 				larva.train(over, false);
 				self.subtract_resources(over, false);
+				overs_under_prod += 1;
+			} else {
+				break;
 			}
 		}
 
@@ -357,7 +374,7 @@ impl FlourishBot {
 		}
 	}
 
-	fn execute_micro(&self) {
+	fn execute_micro(&mut self) {
 		// Injecting Larva
 		let mut queens = self.units.my.units.filter(|u| {
 			u.type_id() == UnitTypeId::Queen
@@ -392,7 +409,11 @@ impl FlourishBot {
 		let speed_upgrade = UpgradeId::Zerglingmovementspeed;
 		let speed_upgrade_is_almost_ready =
 			self.has_upgrade(speed_upgrade) || self.upgrade_progress(speed_upgrade) >= 0.8;
-		let should_attack = speed_upgrade_is_almost_ready && self.counter().count(zergling) > (self.time / 10.0) as usize;
+		let num_zerglings = self.counter().count(zergling);
+		let start_attack_threshold = (self.time / 20.0) as usize;
+		let end_attack_threshold = (self.time / 60.0) as usize;
+		let should_attack = speed_upgrade_is_almost_ready && num_zerglings > start_attack_threshold || self.attacking && num_zerglings > end_attack_threshold;
+		self.attacking = should_attack;
 
 		// Attacking with zerglings or defending our locations
 		let targets = if should_attack {

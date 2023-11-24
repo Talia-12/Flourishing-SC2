@@ -38,8 +38,7 @@ impl FlourishBot {
 		);
 	}
 
-	pub fn add_excess_workers_from_gas(&self, bases: &Units, gas: &Unit, idle_workers: &mut Units) {
-		let ideal_harvesters = gas.ideal_harvesters().unwrap() as usize;
+	pub fn add_excess_workers_from_gas(&self, bases: &Units, gas: &Unit, idle_workers: &mut Units, desired_workers: usize) {
 		let assigned_harvesters = gas.assigned_harvesters().unwrap() as usize;
 
 		idle_workers.extend(
@@ -54,7 +53,7 @@ impl FlourishBot {
 								&& target_tag == bases.closest(gas).unwrap().tag())
 					})
 				})
-				.take(assigned_harvesters - ideal_harvesters)
+				.take(assigned_harvesters - desired_workers)
 				.cloned(),
 		);
 	}
