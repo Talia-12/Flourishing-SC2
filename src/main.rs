@@ -1,19 +1,19 @@
 use std::cmp::Ordering;
 
-use rust_sc2::{prelude::*, Request};
+use rust_sc2::prelude::*;
 
 #[bot]
 #[derive(Default)]
-struct FlourishingBot {
+struct FlourishBot {
 	last_loop_distributed: u32,
 	last_debug_messages: f32
 }
 
-impl Player for FlourishingBot {
+impl Player for FlourishBot {
 	// This settings are used to connect bot to the game.
 	fn get_player_settings(&self) -> PlayerSettings {
 		PlayerSettings::new(Race::Zerg)
-			.with_name("Flourishing")
+			.with_name("Flourish")
 			.raw_affects_selection(false)
 			.raw_crop_to_playable_area(true)
 	}
@@ -55,8 +55,8 @@ impl Player for FlourishingBot {
 	}
 }
 
-impl FlourishingBot {
-	const DEBUG_MESSAGE_DELAY: f32 = 10.0;
+impl FlourishBot {
+	const DEBUG_MESSAGE_DELAY: f32 = 60.0;
 	const DISTRIBUTION_DELAY: u32 = 8;
 
 	fn debug_messages(&mut self) {
@@ -417,9 +417,9 @@ impl FlourishingBot {
 fn main() -> SC2Result<()> {
 	run_vs_computer(
 		// Pass mutable referece to your bot here.
-		&mut FlourishingBot::default(),
+		&mut FlourishBot::default(),
 		// Opponent configuration.
-		Computer::new(Race::Random, Difficulty::VeryEasy, None),
+		Computer::new(Race::Random, Difficulty::MediumHard, None),
 		// Map name. Panics if map doesn't exists in "StarCraft II/Maps" folder.
 		"BerlingradAIE",
 		// Additional settings:
