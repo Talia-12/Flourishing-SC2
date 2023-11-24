@@ -10,6 +10,9 @@ pub struct FlourishBot {
 	last_loop_upgraded: u32,
 	last_debug_messages: f32,
 	attacking: bool,
+	has_enough_gas: bool,
+	has_way_too_much_gas: bool,
+	has_enough_workers_for_gas: bool,
 	upgrades_to_research: Vec<UpgradeId>
 }
 
@@ -21,6 +24,9 @@ impl Default for FlourishBot {
 			last_loop_upgraded: Default::default(),
 			last_debug_messages: Default::default(),
 			attacking: Default::default(),
+			has_enough_gas: Default::default(),
+			has_way_too_much_gas: Default::default(),
+			has_enough_workers_for_gas: Default::default(),
 			upgrades_to_research: vec![
 				UpgradeId::Zerglingmovementspeed,
 				UpgradeId::ZergMeleeWeaponsLevel1,
@@ -69,6 +75,7 @@ impl Player for FlourishBot {
 	// Main bot's logic should be here.
 	// Bot's observation updates before each step.
 	fn on_step(&mut self, _iteration: usize) -> SC2Result<()> {
+		self.global_data();
 		self.debug_messages();
 		self.distribute_workers();
 		self.upgrades();
@@ -85,6 +92,12 @@ impl FlourishBot {
 	const DISTRIBUTION_DELAY: u32 = 8;
 	const UPGRADE_DELAY: u32 = 12;
 
+	fn global_data(&mut self) {
+		self.has_enough_gas = self.vespene > 200 && self.vespene > self.minerals / 3;
+		self.has_way_too_much_gas = self.has_enough_gas && self.vespene > 2*self.minerals;
+		self.has_enough_workers_for_gas = self.counter().count(UnitTypeId::Drone) > 10;
+	}
+
 	fn debug_messages(&mut self) {
 		let time = self.time;
 		let last_debug_messages = &mut self.last_debug_messages;
@@ -92,8 +105,6 @@ impl FlourishBot {
 			return;
 		}
 		*last_debug_messages = time;
-
-		
 	}
 
 	fn distribute_workers(&mut self) {
@@ -136,10 +147,7 @@ impl FlourishBot {
 		}
 
 		// Distributing gas workers
-		let has_enough_gas = self.vespene > 200 && self.vespene > self.minerals;
-		let has_way_too_much_gas = has_enough_gas && self.vespene > 2*self.minerals;
-		let has_enough_workers = self.counter().count(UnitTypeId::Drone) > 10;
-		let target_gas_workers: usize = if !has_enough_workers { 0 } else if has_way_too_much_gas { 1 } else if has_enough_gas { 2 } else { 3 };
+		let target_gas_workers: usize = if !self.has_enough_workers_for_gas { 0 } else if self.has_way_too_much_gas { 1 } else if self.has_enough_gas { 2 } else { 3 };
 
 		self.units.my.gas_buildings.iter().ready().for_each(|gas| {
 			let ideal_harvesters = gas.ideal_harvesters().unwrap() as usize;
@@ -228,7 +236,7 @@ impl FlourishBot {
 					.my
 					.structures
 					.iter()
-					.find(|s| s.type_id() == structure_type)
+					.find(|s| s.type_id() == structure_type && !s.is_active())
 				{
 					structure.research(upgrade, false);
 					self.subtract_upgrade_cost(upgrade);
@@ -262,6 +270,12 @@ impl FlourishBot {
 			return;
 		}
 
+		let tech_buildings = vec![
+			(UnitTypeId::SpawningPool, 1, 0.0),
+			(UnitTypeId::EvolutionChamber, 2, 0.0),
+			(UnitTypeId::RoachWarren, 1, 280.0)
+		];
+
 		let mineral_tags = self
 			.units
 			.mineral_fields
@@ -269,26 +283,24 @@ impl FlourishBot {
 			.map(|u| u.tag())
 			.collect::<Vec<u64>>();
 
-		let pool = UnitTypeId::SpawningPool;
-		if self.counter().all().count(pool) == 0 && self.can_afford(pool, false) {
-			let place = self.start_location.towards(self.game_info.map_center, 6.0);
-			if let Some(location) = self.find_placement(pool, place, Default::default()) {
-				if let Some(builder) = self.get_builder(location, &mineral_tags) {
-					builder.build(pool, location, false);
-					self.subtract_resources(pool, false);
-				}
+		for (tech_building, desired_num, min_start_time) in tech_buildings {
+			if self.time < min_start_time || self.counter().all().count(tech_building) >= desired_num {
+				continue;
 			}
-		}
 
-		let chamber = UnitTypeId::EvolutionChamber;
-		if self.counter().all().count(chamber) == 0 && self.can_afford(chamber, false) {
-			let place = self.start_location.towards(self.game_info.map_center, 6.0);
-			if let Some(location) = self.find_placement(pool, place, Default::default()) {
-				if let Some(builder) = self.get_builder(location, &mineral_tags) {
-					builder.build(chamber, location, false);
-					self.subtract_resources(chamber, false);
+			if self.can_afford(tech_building, false) {
+				let place = self.start_location.towards(self.game_info.map_center, 6.0);
+				if let Some(location) = self.find_placement(tech_building, place, Default::default()) {
+					if let Some(builder) = self.get_builder(location, &mineral_tags) {
+						builder.build(tech_building, location, false);
+						self.subtract_resources(tech_building, false);
+						continue;
+					}
 				}
 			}
+
+			// if we want to build one of these buildings and couldn't, don't try and build the next one.
+			break;
 		}
 
 		let extractor = UnitTypeId::Extractor;
@@ -296,9 +308,8 @@ impl FlourishBot {
 		let num_extractors = self.counter().all().count(extractor);
 		let num_hatcheries = self.counter().all().count(hatchery);
 
-		let has_enough_gas = self.vespene > 200 && self.vespene > self.minerals;
 		let has_extractors_for_hatcheries = num_extractors >= 2 * num_hatcheries;
-		if !has_enough_gas && !has_extractors_for_hatcheries && self.can_afford(extractor, false) {
+		if !self.has_enough_gas && !has_extractors_for_hatcheries && self.can_afford(extractor, false) {
 			let start = self.start_location;
 			if let Some(geyser) = self.find_gas_placement(start) {
 				if let Some(builder) = self.get_builder(geyser.position(), &mineral_tags) {
@@ -406,13 +417,12 @@ impl FlourishBot {
 		}
 
 		// Check if speed upgrade is >80% ready
-		let speed_upgrade = UpgradeId::Zerglingmovementspeed;
-		let speed_upgrade_is_almost_ready =
-			self.has_upgrade(speed_upgrade) || self.upgrade_progress(speed_upgrade) >= 0.8;
-		let num_zerglings = self.counter().count(zergling);
-		let start_attack_threshold = (self.time / 20.0) as usize;
+		let upgrades = vec![UpgradeId::Zerglingmovementspeed, UpgradeId::ZergMeleeWeaponsLevel1];
+		let upgrades_almost_ready = upgrades.iter().all(|upgrade| self.has_upgrade(*upgrade) || self.upgrade_progress(*upgrade) >= 0.8);
+		let num_zerglings: usize = self.counter().count(zergling);
+		let start_attack_threshold = (self.time / 15.0) as usize;
 		let end_attack_threshold = (self.time / 60.0) as usize;
-		let should_attack = speed_upgrade_is_almost_ready && num_zerglings > start_attack_threshold || self.attacking && num_zerglings > end_attack_threshold;
+		let should_attack = upgrades_almost_ready && num_zerglings > start_attack_threshold || self.attacking && num_zerglings > end_attack_threshold;
 		self.attacking = should_attack;
 
 		// Attacking with zerglings or defending our locations
