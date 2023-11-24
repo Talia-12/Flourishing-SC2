@@ -30,11 +30,22 @@ impl Default for FlourishBot {
 			upgrades_to_research: vec![
 				UpgradeId::Zerglingmovementspeed,
 				UpgradeId::ZergMeleeWeaponsLevel1,
+				UpgradeId::ZergMissileWeaponsLevel1,
+				UpgradeId::ZergFlyerWeaponsLevel1,
 				UpgradeId::ZergGroundArmorsLevel1,
+				UpgradeId::ZergFlyerArmorsLevel1,
+				UpgradeId::GlialReconstitution,
+				UpgradeId::TunnelingClaws,
 				UpgradeId::ZergMeleeWeaponsLevel2,
+				UpgradeId::ZergMissileWeaponsLevel2,
+				UpgradeId::ZergFlyerWeaponsLevel2,
 				UpgradeId::ZergGroundArmorsLevel2,
+				UpgradeId::ZergFlyerArmorsLevel2,
 				UpgradeId::ZergMeleeWeaponsLevel3,
+				UpgradeId::ZergMissileWeaponsLevel3,
+				UpgradeId::ZergFlyerWeaponsLevel3,
 				UpgradeId::ZergGroundArmorsLevel3,
+				UpgradeId::ZergFlyerArmorsLevel3,
 			]
 		}
 	}
@@ -319,12 +330,22 @@ impl FlourishBot {
 			}
 		}
 
-		if self.can_afford(hatchery, false) && num_hatcheries < 1 + (self.time / 120.0) as usize {
+		if self.can_afford(hatchery, false) && num_hatcheries < 1 + (self.time / 160.0) as usize {
 			if let Some(exp) = self.get_expansion() {
 				if let Some(builder) = self.get_builder(exp.loc, &mineral_tags) {
 					builder.build(hatchery, exp.loc, false);
 					self.subtract_resources(hatchery, false);
 				}
+			}
+		}
+
+		let lair = UnitTypeId::Lair;
+		let hive = UnitTypeId::Hive;
+		let num_lairs = self.counter().all().count(lair);
+		let num_hives = self.counter().all().count(hive);
+		if self.can_afford_multiple(lair, false, 2) && num_lairs + num_hives == 0 && self.time > 7.0 * 60.0 {
+			if let Some(hatchery) = self.units.my.townhalls.iter().of_type(hatchery).closest(self.start_location) {
+				hatchery.train(lair, false);
 			}
 		}
 	}
@@ -366,8 +387,22 @@ impl FlourishBot {
 			}
 		}
 
+		// when we're getting ready for the timing attack focus on zerglings
+		let upgrades = vec![UpgradeId::Zerglingmovementspeed, UpgradeId::ZergMeleeWeaponsLevel1];
+		let upgrades_almost_ready = upgrades.iter().any(|upgrade| self.upgrade_progress(*upgrade) >= 0.2 && !self.has_upgrade(*upgrade));
+		
+		let zergling = UnitTypeId::Zergling;
+		while upgrades_almost_ready && self.can_afford(zergling, true) {
+			if let Some(larva) = self.units.my.larvas.pop() {
+				larva.train(zergling, false);
+				self.subtract_resources(zergling, true);
+			} else {
+				break;
+			}
+		}
+
 		let drone = UnitTypeId::Drone;
-		if (self.supply_workers as usize) < 96.min(self.counter().all().count(UnitTypeId::Hatchery) * 16)
+		if (self.supply_workers as usize) < 80.min(self.counter().all().count(UnitTypeId::Hatchery) * 16)
 			&& self.can_afford(drone, true)
 		{
 			if let Some(larva) = self.units.my.larvas.pop() {
@@ -376,7 +411,6 @@ impl FlourishBot {
 			}
 		}
 
-		let zergling = UnitTypeId::Zergling;
 		if self.can_afford(zergling, true) {
 			if let Some(larva) = self.units.my.larvas.pop() {
 				larva.train(zergling, false);
@@ -420,8 +454,8 @@ impl FlourishBot {
 		let upgrades = vec![UpgradeId::Zerglingmovementspeed, UpgradeId::ZergMeleeWeaponsLevel1];
 		let upgrades_almost_ready = upgrades.iter().all(|upgrade| self.has_upgrade(*upgrade) || self.upgrade_progress(*upgrade) >= 0.8);
 		let num_zerglings: usize = self.counter().count(zergling);
-		let start_attack_threshold = (self.time / 15.0) as usize;
-		let end_attack_threshold = (self.time / 60.0) as usize;
+		let start_attack_threshold = 20;
+		let end_attack_threshold = 3;
 		let should_attack = upgrades_almost_ready && num_zerglings > start_attack_threshold || self.attacking && num_zerglings > end_attack_threshold;
 		self.attacking = should_attack;
 
@@ -442,7 +476,12 @@ impl FlourishBot {
 					.min_by_key(|t| t.hits())
 					.or_else(|| targets.closest(u))
 				{
-					u.attack(Target::Pos(target.position()), false);
+					// Don't get stuck trying to kill changelings
+					if target.type_id() == UnitTypeId::ChangelingZergling {
+						u.attack(Target::Tag(target.tag()), false);
+					} else {
+						u.attack(Target::Pos(target.position()), false);
+					}
 				}
 			}
 		} else {
