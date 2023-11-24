@@ -2,11 +2,34 @@ use std::cmp::Ordering;
 
 use rust_sc2::prelude::*;
 
+use crate::prereqs::upgrade_prereqs;
+
 #[bot]
-#[derive(Default)]
 pub struct FlourishBot {
 	last_loop_distributed: u32,
-	last_debug_messages: f32
+	last_loop_upgraded: u32,
+	last_debug_messages: f32,
+	upgrades_to_research: Vec<UpgradeId>
+}
+
+impl Default for FlourishBot {
+	fn default() -> Self {
+		Self {
+			_bot: Default::default(),
+			last_loop_distributed: Default::default(),
+			last_loop_upgraded: Default::default(),
+			last_debug_messages: Default::default(),
+			upgrades_to_research: vec![
+				UpgradeId::Zerglingmovementspeed,
+				UpgradeId::ZergMeleeWeaponsLevel1,
+				UpgradeId::ZergGroundArmorsLevel1,
+				UpgradeId::ZergMeleeWeaponsLevel2,
+				UpgradeId::ZergGroundArmorsLevel2,
+				UpgradeId::ZergMeleeWeaponsLevel3,
+				UpgradeId::ZergGroundArmorsLevel3,
+			]
+		}
+	}
 }
 
 impl Player for FlourishBot {
@@ -51,13 +74,14 @@ impl Player for FlourishBot {
 		self.order_units();
 		self.execute_micro();
 		
-		Ok(())		
+		Ok(())
 	}
 }
 
 impl FlourishBot {
 	const DEBUG_MESSAGE_DELAY: f32 = 60.0;
 	const DISTRIBUTION_DELAY: u32 = 8;
+	const UPGRADE_DELAY: u32 = 12;
 
 	fn debug_messages(&mut self) {
 		let time = self.time;
@@ -103,46 +127,18 @@ impl FlourishBot {
 		let mineral_tags = mineral_fields.iter().map(|m| m.tag()).collect::<Vec<u64>>();
 		for base in &bases {
 			match base.assigned_harvesters().cmp(&base.ideal_harvesters()) {
-				Ordering::Less => (0..(base.ideal_harvesters().unwrap()
-					- base.assigned_harvesters().unwrap()))
-					.for_each(|_| {
-						deficit_minings.push(base.clone());
-					}),
-				Ordering::Greater => {
-					let local_minerals = mineral_fields
-						.iter()
-						.closer(11.0, base)
-						.map(|m| m.tag())
-						.collect::<Vec<u64>>();
-
-					idle_workers.extend(
-						self.units
-							.my
-							.workers
-							.iter()
-							.filter(|u| {
-								u.target_tag().map_or(false, |target_tag| {
-									local_minerals.contains(&target_tag)
-										|| (u.is_carrying_minerals() && target_tag == base.tag())
-								})
-							})
-							.take(
-								(base.assigned_harvesters().unwrap() - base.ideal_harvesters().unwrap())
-									as usize,
-							)
-							.cloned(),
-					);
-				}
+				Ordering::Less => for _ in 0..(base.ideal_harvesters().unwrap() - base.assigned_harvesters().unwrap()) {
+					deficit_minings.push(base.clone());
+				},
+				Ordering::Greater => self.add_excess_workers_from_base(base, &mut idle_workers),
 				_ => {}
 			}
 		}
 
 		// Distributing gas workers
-		let speed_upgrade = UpgradeId::Zerglingmovementspeed;
-		let has_enough_gas = self.can_afford_upgrade(speed_upgrade)
-			|| self.has_upgrade(speed_upgrade)
-			|| self.is_ordered_upgrade(speed_upgrade);
-		let target_gas_workers = Some(if has_enough_gas { 0 } else { 3 });
+		let has_enough_gas = self.vespene > 200 && self.vespene > self.minerals;
+		let has_enough_workers = self.counter().count(UnitTypeId::Drone) > 10;
+		let target_gas_workers = Some(if has_enough_gas || !has_enough_workers { 0 } else { 3 });
 
 		self.units.my.gas_buildings.iter().ready().for_each(|gas| {
 			let ideal_harvesters = gas.ideal_harvesters().unwrap() as usize;
@@ -150,6 +146,8 @@ impl FlourishBot {
 
 			match gas.assigned_harvesters().cmp(&target_gas_workers) {
 				Ordering::Less => {
+					// If there are less than the desired number of gas workers, workers
+					// can be stolen from anywhere to put in gas
 					idle_workers.extend(self.units.my.workers.filter(|u| {
 						u.target_tag()
 							.map_or(false, |target_tag| mineral_tags.contains(&target_tag))
@@ -159,23 +157,7 @@ impl FlourishBot {
 						deficit_geysers.push(gas.clone());
 					}
 				}
-				Ordering::Greater => {
-					idle_workers.extend(
-						self.units
-							.my
-							.workers
-							.iter()
-							.filter(|u| {
-								u.target_tag().map_or(false, |target_tag| {
-									target_tag == gas.tag()
-										|| (u.is_carrying_vespene()
-											&& target_tag == bases.closest(gas).unwrap().tag())
-								})
-							})
-							.take(assigned_harvesters - ideal_harvesters)
-							.cloned(),
-					);
-				}
+				Ordering::Greater => self.add_excess_workers_from_gas(&bases, gas, &mut idle_workers),
 				_ => {}
 			}
 		});
@@ -217,19 +199,46 @@ impl FlourishBot {
 	}
 
 	fn upgrades(&mut self) {
-		let speed_upgrade = UpgradeId::Zerglingmovementspeed;
-		if !(self.has_upgrade(speed_upgrade) || self.is_ordered_upgrade(speed_upgrade))
-			&& self.can_afford_upgrade(speed_upgrade)
-		{
-			if let Some(pool) = self
-				.units
-				.my
-				.structures
-				.iter()
-				.find(|s| s.type_id() == UnitTypeId::SpawningPool)
-			{
-				pool.research(speed_upgrade, false);
-				self.subtract_upgrade_cost(speed_upgrade);
+		let game_loop = self.state.observation.game_loop();
+		let last_loop = &mut self.last_loop_upgraded;
+		if *last_loop + Self::UPGRADE_DELAY as u32 > game_loop {
+			return;
+		}
+		*last_loop = game_loop;
+
+		let mut to_remove = vec![];
+
+		for upgrade in self.upgrades_to_research.clone() {
+			if self.has_upgrade(upgrade) {
+				to_remove.push(upgrade);
+				continue;
+			}
+			if self.is_ordered_upgrade(upgrade) || !self.can_afford_upgrade(upgrade) {
+				continue;
+			}
+
+			if let Some((structure_type, prereq_structures, prereq_upgrades)) = upgrade_prereqs(upgrade) {
+				if !self.has_prereqs(prereq_structures, prereq_upgrades) {
+					continue;
+				}
+				
+				if let Some(structure) = self
+					.units
+					.my
+					.structures
+					.iter()
+					.find(|s| s.type_id() == structure_type)
+				{
+					structure.research(upgrade, false);
+					self.subtract_upgrade_cost(upgrade);
+				}
+			}
+		}
+
+		for upgrade in to_remove {
+			// Ignore if no such element is found
+			if let Some(pos) = self.upgrades_to_research.iter().position(|x| *x == upgrade) {
+				self.upgrades_to_research.remove(pos);
 			}
 		}
 	}
@@ -271,7 +280,13 @@ impl FlourishBot {
 		}
 
 		let extractor = UnitTypeId::Extractor;
-		if self.counter().all().count(extractor) == 0 && self.can_afford(extractor, false) {
+		let hatchery = UnitTypeId::Hatchery;		
+		let num_extractors = self.counter().all().count(extractor);
+		let num_hatcheries = self.counter().all().count(hatchery);
+
+		let has_enough_gas = self.vespene > 200 && self.vespene > self.minerals;
+		let has_extractors_for_hatcheries = num_extractors >= 2 * num_hatcheries;
+		if !has_enough_gas && !has_extractors_for_hatcheries && self.can_afford(extractor, false) {
 			let start = self.start_location;
 			if let Some(geyser) = self.find_gas_placement(start) {
 				if let Some(builder) = self.get_builder(geyser.position(), &mineral_tags) {
@@ -281,8 +296,7 @@ impl FlourishBot {
 			}
 		}
 
-		let hatchery = UnitTypeId::Hatchery;		
-		if self.can_afford(hatchery, false) && self.counter().all().count(hatchery) < 1 + (self.time / 120.0) as usize {
+		if self.can_afford(hatchery, false) && num_hatcheries < 1 + (self.time / 120.0) as usize {
 			if let Some(exp) = self.get_expansion() {
 				if let Some(builder) = self.get_builder(exp.loc, &mineral_tags) {
 					builder.build(hatchery, exp.loc, false);
