@@ -3,6 +3,8 @@ use std::cmp::Ordering;
 use rust_sc2::prelude::*;
 
 use crate::prereqs::upgrade_prereqs;
+use crate::build_scheduler::BuildScheduler;
+use crate::surveillance::Surveillance;
 
 #[bot]
 pub struct FlourishBot {
@@ -13,11 +15,34 @@ pub struct FlourishBot {
 	has_enough_gas: bool,
 	has_way_too_much_gas: bool,
 	has_enough_workers_for_gas: bool,
-	upgrades_to_research: Vec<UpgradeId>
+	upgrades_to_research: Vec<UpgradeId>,
+	build_scheduler: BuildScheduler,
+	surveillance: Surveillance,
 }
 
 impl Default for FlourishBot {
 	fn default() -> Self {
+		let upgrades_to_research = vec![
+			UpgradeId::Zerglingmovementspeed,
+			UpgradeId::ZergMeleeWeaponsLevel1,
+			UpgradeId::ZergMissileWeaponsLevel1,
+			UpgradeId::ZergFlyerWeaponsLevel1,
+			UpgradeId::ZergGroundArmorsLevel1,
+			UpgradeId::ZergFlyerArmorsLevel1,
+			UpgradeId::GlialReconstitution,
+			UpgradeId::TunnelingClaws,
+			UpgradeId::ZergMeleeWeaponsLevel2,
+			UpgradeId::ZergMissileWeaponsLevel2,
+			UpgradeId::ZergFlyerWeaponsLevel2,
+			UpgradeId::ZergGroundArmorsLevel2,
+			UpgradeId::ZergFlyerArmorsLevel2,
+			UpgradeId::ZergMeleeWeaponsLevel3,
+			UpgradeId::ZergMissileWeaponsLevel3,
+			UpgradeId::ZergFlyerWeaponsLevel3,
+			UpgradeId::ZergGroundArmorsLevel3,
+			UpgradeId::ZergFlyerArmorsLevel3,
+		];
+
 		Self {
 			_bot: Default::default(),
 			last_loop_distributed: Default::default(),
@@ -27,26 +52,9 @@ impl Default for FlourishBot {
 			has_enough_gas: Default::default(),
 			has_way_too_much_gas: Default::default(),
 			has_enough_workers_for_gas: Default::default(),
-			upgrades_to_research: vec![
-				UpgradeId::Zerglingmovementspeed,
-				UpgradeId::ZergMeleeWeaponsLevel1,
-				UpgradeId::ZergMissileWeaponsLevel1,
-				UpgradeId::ZergFlyerWeaponsLevel1,
-				UpgradeId::ZergGroundArmorsLevel1,
-				UpgradeId::ZergFlyerArmorsLevel1,
-				UpgradeId::GlialReconstitution,
-				UpgradeId::TunnelingClaws,
-				UpgradeId::ZergMeleeWeaponsLevel2,
-				UpgradeId::ZergMissileWeaponsLevel2,
-				UpgradeId::ZergFlyerWeaponsLevel2,
-				UpgradeId::ZergGroundArmorsLevel2,
-				UpgradeId::ZergFlyerArmorsLevel2,
-				UpgradeId::ZergMeleeWeaponsLevel3,
-				UpgradeId::ZergMissileWeaponsLevel3,
-				UpgradeId::ZergFlyerWeaponsLevel3,
-				UpgradeId::ZergGroundArmorsLevel3,
-				UpgradeId::ZergFlyerArmorsLevel3,
-			]
+			surveillance: Default::default(),
+			build_scheduler: BuildScheduler::initialise(&upgrades_to_research),
+			upgrades_to_research
 		}
 	}
 }
@@ -96,6 +104,24 @@ impl Player for FlourishBot {
 		
 		Ok(())
 	}
+
+	fn on_event(&mut self, event: Event) -> SC2Result<()> {
+		match event {
+			Event::UnitDestroyed(tag, team) => {
+				if let Some(team) = team {
+					if team.is_enemy() {
+						self.surveillance.observed_enemy_unit_die(self.units.enemy.all.get(tag).unwrap().clone());
+					}
+				}
+			},
+			Event::UnitCreated(_) => { },
+			Event::ConstructionStarted(_) => { },
+			Event::ConstructionComplete(_) => { },
+			Event::RandomRaceDetected(_) => { },
+		}
+
+		Ok(())
+	}
 }
 
 impl FlourishBot {
@@ -107,6 +133,7 @@ impl FlourishBot {
 		self.has_enough_gas = self.vespene > 200 && self.vespene > self.minerals / 3;
 		self.has_way_too_much_gas = self.has_enough_gas && self.vespene > 2*self.minerals;
 		self.has_enough_workers_for_gas = self.counter().count(UnitTypeId::Drone) > 10;
+		self.surveillance.update_enemy_units(self.game_step(), &self.units, |unit_type| self.get_unit_cost(unit_type))
 	}
 
 	fn debug_messages(&mut self) {
