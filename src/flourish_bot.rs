@@ -16,8 +16,8 @@ pub struct FlourishBot {
 	has_way_too_much_gas: bool,
 	has_enough_workers_for_gas: bool,
 	upgrades_to_research: Vec<UpgradeId>,
-	build_scheduler: BuildScheduler,
-	surveillance: Surveillance,
+	pub build_scheduler: BuildScheduler,
+	pub surveillance: Surveillance,
 }
 
 impl Default for FlourishBot {
@@ -133,7 +133,7 @@ impl FlourishBot {
 		self.has_enough_gas = self.vespene > 200 && self.vespene > self.minerals / 3;
 		self.has_way_too_much_gas = self.has_enough_gas && self.vespene > 2*self.minerals;
 		self.has_enough_workers_for_gas = self.counter().count(UnitTypeId::Drone) > 10;
-		self.surveillance.update_enemy_units(self.game_step(), &self.units, |unit_type| self.get_unit_cost(unit_type))
+		self.update_enemy_units()
 	}
 
 	fn debug_messages(&mut self) {

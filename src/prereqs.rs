@@ -49,7 +49,7 @@ impl FlourishBot {
 			// if there are any elements of type s, the any will evaluate true once and
 			// the if will not be entered; if there are none of type s the true will never
 			// be seen, and the if block will be evaluated.
-			if !self.units.my.structures.iter().of_type(s).any(|_| true) {
+			if !self.has_prereq(s) {
 				return false;
 			}
 		}
@@ -60,5 +60,9 @@ impl FlourishBot {
 		}
 
 		return true;
+	}
+
+	pub fn has_prereq(&self, structure: UnitTypeId) -> bool {
+		self.units.my.structures.iter().of_type(structure).any(|_| true)
 	}
 }
